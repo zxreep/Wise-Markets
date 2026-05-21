@@ -41,3 +41,7 @@ Optional provider keys:
 - `FINANCEAPI_KEY`
 - `FRED_API_KEY`
 - `NEWSAPI_KEY`
+
+## Render free tier
+
+The API is stateless and runs on Render's free instance. Set `RENDER_EXTERNAL_URL=https://<service>.onrender.com` so the server pings `/health` every 14 minutes and avoids cold-start latency. The FRED adapter works without a key via the public `fredgraph.csv` endpoint, so the deployment requires no paid credentials.

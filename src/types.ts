@@ -46,6 +46,8 @@ export interface ApiEnvelope<T> {
     assetType?: AssetType;
     asOf: string;
     cached?: boolean;
+    partial?: boolean;
+    missingFields?: string[];
   };
 }
 
@@ -143,6 +145,7 @@ export interface Candle {
 export interface SearchResult {
   symbol: string;
   name?: string;
+  id?: string;
   exchange?: string;
   assetType?: AssetType;
   type?: string;
