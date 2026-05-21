@@ -1,5 +1,5 @@
 import type { Candle, MarketAsset, ProviderAdapter } from "../types.js";
-import { fetchText } from "../utils/http.js";
+import { fetchText, ProviderError } from "../utils/http.js";
 import { toStooqSymbol } from "../utils/symbols.js";
 
 export class StooqAdapter implements ProviderAdapter {
@@ -14,7 +14,14 @@ export class StooqAdapter implements ProviderAdapter {
 
     const csv = await fetchText(this.name, url);
     const [, row] = csv.trim().split("\n");
+    if (!row) {
+      throw new ProviderError(`Stooq returned no quote data for ${symbol}`, this.name);
+    }
+
     const [ticker, date, time, open, high, low, close, volume, name] = row.split(",");
+    if (!ticker || close === "N/D" || Number.isNaN(Number(close))) {
+      throw new ProviderError(`Stooq returned invalid quote data for ${symbol}`, this.name);
+    }
 
     return {
       symbol: ticker.toUpperCase(),
