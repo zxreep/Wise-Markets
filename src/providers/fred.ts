@@ -4,6 +4,7 @@ import { fetchJson } from "../utils/http.js";
 
 export class FredAdapter implements ProviderAdapter {
   readonly name = "fred" as const;
+  readonly capabilities = { provider: this.name, supports: { markets: ["FRED"], assetTypes: ["macro", "index"] }, symbolRules: { input: "FRED:SERIES", providerFormat: "FRED series id", examples: ["FRED:DGS10"] }, fallbackMappings: {} } as const;
 
   async indices(): Promise<MarketAsset[]> {
     if (!config.FRED_API_KEY) {

@@ -5,6 +5,7 @@ import { fetchJson } from "../utils/http.js";
 
 export class NewsAdapter implements ProviderAdapter {
   readonly name = "news" as const;
+  readonly capabilities = { provider: this.name, supports: { markets: ["GLOBAL"], assetTypes: ["equity", "etf", "index", "crypto", "forex", "commodity", "mutual_fund", "macro"] }, symbolRules: { input: "query", providerFormat: "RSS/News query", examples: ["reliance finance"] }, fallbackMappings: {} } as const;
   private readonly parser = new Parser();
 
   async financeNews(query?: string): Promise<NewsItem[]> {
