@@ -8,32 +8,38 @@ import type {
   SearchResult,
   SecurityOverview
 } from "../types.js";
-import { fetchJson, retry, withTimeout } from "../utils/http.js";
-import { assetTypeFromYahoo, exchangeFromYahoo, normalizeExchange, normalizeInstrument, normalizeSymbol } from "../utils/symbols.js";
+import { ProviderError, retry, withTimeout } from "../utils/http.js";
+import {
+  assetTypeFromYahoo,
+  exchangeFromYahoo,
+  normalizeExchange,
+  normalizeInstrument,
+  normalizeSymbol
+} from "../utils/symbols.js";
 
 type YahooQuote = Record<string, unknown>;
-const yahoo = new yahooFinance();
+
+try {
+  yahooFinance.suppressNotices?.(["yahooSurvey", "ripHistorical"]);
+} catch {
+  /* older versions ignore */
+}
 
 function unwrapValue(value: unknown): unknown {
   if (value && typeof value === "object") {
     const wrapped = value as { raw?: unknown; fmt?: unknown; longFmt?: unknown };
     return wrapped.raw ?? wrapped.fmt ?? wrapped.longFmt ?? value;
   }
-
   return value;
 }
 
 function numberValue(value: unknown): number | undefined {
   const unwrapped = unwrapValue(value);
-  if (typeof unwrapped === "number" && Number.isFinite(unwrapped)) {
-    return unwrapped;
-  }
-
+  if (typeof unwrapped === "number" && Number.isFinite(unwrapped)) return unwrapped;
   if (typeof unwrapped === "string" && unwrapped.trim() !== "") {
     const parsed = Number(unwrapped.replace(/,/g, ""));
     return Number.isFinite(parsed) ? parsed : undefined;
   }
-
   return undefined;
 }
 
@@ -46,13 +52,12 @@ function dateValue(value: unknown): string | undefined {
   const unwrapped = unwrapValue(value);
   const date =
     typeof unwrapped === "number"
-      ? new Date(unwrapped * 1000)
+      ? new Date(unwrapped > 1e12 ? unwrapped : unwrapped * 1000)
       : typeof unwrapped === "string"
         ? new Date(unwrapped)
         : unwrapped instanceof Date
           ? unwrapped
           : undefined;
-
   return date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined;
 }
 
@@ -60,7 +65,8 @@ function assetFromQuote(quote: YahooQuote): MarketAsset {
   return {
     symbol: stringValue(quote.symbol) ?? "",
     name: stringValue(quote.shortName) ?? stringValue(quote.longName),
-    exchange: stringValue(quote.fullExchangeName) ?? stringValue(quote.exchange),
+    exchange: exchangeFromYahoo(stringValue(quote.exchange)) ?? stringValue(quote.fullExchangeName) ?? stringValue(quote.exchange),
+    assetType: assetTypeFromYahoo(stringValue(quote.quoteType)),
     price: numberValue(quote.regularMarketPrice),
     change: numberValue(quote.regularMarketChange),
     changePercent: numberValue(quote.regularMarketChangePercent),
@@ -83,45 +89,124 @@ function newsFromItems(items: Array<Record<string, unknown>> = []): NewsItem[] {
   }));
 }
 
+const RANGE_DAYS: Record<string, number | "max"> = {
+  "1d": 1,
+  "5d": 5,
+  "1mo": 31,
+  "3mo": 93,
+  "6mo": 186,
+  ytd: 0,
+  "1y": 366,
+  "2y": 732,
+  "5y": 1830,
+  "10y": 3660,
+  max: "max"
+};
+
+function rangeToPeriod1(range: string): Date {
+  const today = new Date();
+  if (range === "max") return new Date(1970, 0, 1);
+  if (range === "ytd") return new Date(today.getFullYear(), 0, 1);
+  const days = RANGE_DAYS[range] ?? 366;
+  if (days === "max") return new Date(1970, 0, 1);
+  const period = new Date(today);
+  period.setDate(period.getDate() - Number(days));
+  return period;
+}
+
+const FULL_MODULES = [
+  "price",
+  "summaryProfile",
+  "assetProfile",
+  "summaryDetail",
+  "defaultKeyStatistics",
+  "financialData",
+  "incomeStatementHistory",
+  "incomeStatementHistoryQuarterly",
+  "cashflowStatementHistory",
+  "calendarEvents",
+  "secFilings",
+  "upgradeDowngradeHistory"
+] as const;
+
+const LIGHT_MODULES = ["price", "summaryProfile", "defaultKeyStatistics"] as const;
+
+const HOLDER_MODULES = ["majorHoldersBreakdown", "institutionOwnership", "fundOwnership"] as const;
+
+export interface YahooOverviewResult {
+  overview: SecurityOverview;
+  partial: boolean;
+  missingFields: string[];
+}
+
 export class YahooAdapter implements ProviderAdapter {
   readonly name = "yahoo" as const;
   readonly capabilities = {
     provider: this.name,
     supports: {
-      markets: ["NYSE", "NASDAQ", "AMEX", "NSE", "BSE", "LSE", "EURONEXT", "XETRA", "TSE", "HKEX", "SSE", "FOREX", "COMMODITIES"],
+      markets: ["NYSE", "NASDAQ", "AMEX", "NSE", "BSE", "LSE", "EURONEXT", "XETRA", "TSE", "HKEX", "SSE", "SZSE", "ASX", "TSX", "FOREX", "COMMODITIES"],
       assetTypes: ["equity", "etf", "index", "forex", "commodity", "mutual_fund"]
     },
-    symbolRules: { input: "EXCHANGE:SYMBOL", providerFormat: "Yahoo suffix format", examples: ["NASDAQ:AAPL", "NSE:RELIANCE", "FOREX:EURUSD"] },
+    symbolRules: {
+      input: "EXCHANGE:SYMBOL",
+      providerFormat: "Yahoo suffix format",
+      examples: ["NASDAQ:AAPL", "NSE:RELIANCE", "FOREX:EURUSD"]
+    },
     fallbackMappings: { stooq: "Stooq exchange suffix format", news: "related finance news" }
   } as const;
 
   async quote(symbol: string, exchange?: string): Promise<YahooQuote> {
     const normalized = normalizeSymbol(symbol, exchange);
-    return retry(this.name, () => withTimeout(() => yahoo.quote(normalized) as Promise<YahooQuote>));
+    return retry(this.name, () =>
+      withTimeout(() => yahooFinance.quote(normalized) as unknown as Promise<YahooQuote>)
+    );
   }
 
   async securityOverview(symbol: string, exchange?: string): Promise<SecurityOverview> {
+    return (await this.securityOverviewDetailed(symbol, exchange)).overview;
+  }
+
+  async securityOverviewDetailed(symbol: string, exchange?: string): Promise<YahooOverviewResult> {
     const instrument = normalizeInstrument(exchange ?? "NASDAQ", symbol);
     const normalized = instrument.providerSymbols.yahoo ?? normalizeSymbol(symbol, exchange);
-    const modules = [
-      "price",
-      "summaryProfile",
-      "assetProfile",
-      "summaryDetail",
-      "defaultKeyStatistics",
-      "financialData",
-      "incomeStatementHistory",
-      "incomeStatementHistoryQuarterly",
-      "cashflowStatementHistory",
-      "calendarEvents",
-      "secFilings",
-      "upgradeDowngradeHistory"
-    ] as const;
+    const missingFields: string[] = [];
 
-    const [quoteSummary, chart, news] = await Promise.all([
-      this.quoteSummary(normalized, modules),
-      this.chart(normalized, "1y", "1d").catch(() => []),
-      this.news(normalized).catch(() => [])
+    let quoteSummary: Record<string, any> = {};
+    let usedLight = false;
+
+    try {
+      quoteSummary = await retry(this.name, () =>
+        withTimeout(() =>
+          yahooFinance.quoteSummary(normalized, {
+            modules: [...FULL_MODULES]
+          }) as Promise<Record<string, any>>
+        )
+      );
+    } catch (error) {
+      try {
+        quoteSummary = await retry(this.name, () =>
+          withTimeout(() =>
+            yahooFinance.quoteSummary(normalized, {
+              modules: [...LIGHT_MODULES]
+            }) as Promise<Record<string, any>>
+          )
+        );
+        usedLight = true;
+        missingFields.push("financials.annual", "financials.quarterly", "financials.cashflow", "events");
+      } catch {
+        throw error;
+      }
+    }
+
+    const [chart, news] = await Promise.all([
+      this.chart(normalized, "1y", "1d").catch(() => {
+        missingFields.push("historicalPerformance");
+        return [] as Candle[];
+      }),
+      this.news(normalized).catch(() => {
+        missingFields.push("news");
+        return [] as NewsItem[];
+      })
     ]);
 
     const price = quoteSummary.price ?? {};
@@ -129,11 +214,15 @@ export class YahooAdapter implements ProviderAdapter {
     const keyStats = quoteSummary.defaultKeyStatistics ?? {};
     const financialData = quoteSummary.financialData ?? {};
     const profile = quoteSummary.assetProfile ?? quoteSummary.summaryProfile ?? {};
-    const events = this.eventsFromSummary(quoteSummary);
+    const events = usedLight ? [] : this.eventsFromSummary(quoteSummary);
     const latest = chart.at(-1);
     const first = chart[0];
 
-    return {
+    const annual = usedLight ? [] : this.statementRows(quoteSummary.incomeStatementHistory?.incomeStatementHistory);
+    const quarterly = usedLight ? [] : this.statementRows(quoteSummary.incomeStatementHistoryQuarterly?.incomeStatementHistory);
+    const cashflow = usedLight ? [] : this.statementRows(quoteSummary.cashflowStatementHistory?.cashflowStatements);
+
+    const overview: SecurityOverview = {
       symbol: instrument.symbol,
       exchange: instrument.exchange,
       assetType: instrument.assetType,
@@ -155,11 +244,7 @@ export class YahooAdapter implements ProviderAdapter {
         dividendYield: numberValue(summaryDetail.dividendYield),
         beta: numberValue(summaryDetail.beta)
       },
-      financials: {
-        annual: this.statementRows(quoteSummary.incomeStatementHistory?.incomeStatementHistory),
-        quarterly: this.statementRows(quoteSummary.incomeStatementHistoryQuarterly?.incomeStatementHistory),
-        cashflow: this.statementRows(quoteSummary.cashflowStatementHistory?.cashflowStatements)
-      },
+      financials: { annual, quarterly, cashflow },
       profile: {
         name: stringValue(price.longName) ?? stringValue(price.shortName),
         sector: stringValue(profile.sector),
@@ -175,73 +260,55 @@ export class YahooAdapter implements ProviderAdapter {
       events,
       news
     };
+
+    if (!overview.price.regularMarketPrice) missingFields.push("price.regularMarketPrice");
+    if (!overview.profile.name) missingFields.push("profile.name");
+
+    return { overview, partial: missingFields.length > 0, missingFields };
   }
 
   async chart(symbol: string, range = "1y", interval = "1d", exchange = "NASDAQ"): Promise<Candle[]> {
     const normalized = normalizeInstrument(exchange, symbol).providerSymbols.yahoo ?? normalizeSymbol(symbol, exchange);
-    const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalized)}`);
-    url.searchParams.set("range", range);
-    url.searchParams.set("interval", interval);
-    url.searchParams.set("includePrePost", "false");
-    url.searchParams.set("events", "div,splits");
-    const result = await fetchJson<{
-      chart?: {
-        result?: Array<{
-          timestamp?: number[];
-          indicators?: {
-            quote?: Array<{
-              open?: number[];
-              high?: number[];
-              low?: number[];
-              close?: number[];
-              volume?: number[];
-            }>;
-          };
-        }>;
-      };
-    }>(this.name, url);
-    const chart = result.chart?.result?.[0];
-    const quote = chart?.indicators?.quote?.[0];
+    const period1 = rangeToPeriod1(range);
+    const result = await retry(this.name, () =>
+      withTimeout(() =>
+        yahooFinance.chart(normalized, {
+          period1,
+          interval: interval as "1d" | "1wk" | "1mo",
+          includePrePost: false,
+          events: "div|split"
+        }) as Promise<{ quotes?: Array<Record<string, unknown>> }>
+      )
+    );
 
-    return (chart?.timestamp ?? [])
-      .map((timestamp, index) => ({
-        date: new Date(timestamp * 1000).toISOString(),
-        open: quote?.open?.[index] ?? 0,
-        high: quote?.high?.[index] ?? 0,
-        low: quote?.low?.[index] ?? 0,
-        close: quote?.close?.[index] ?? 0,
-        volume: quote?.volume?.[index]
-      }))
+    const quotes = (result.quotes ?? []) as Array<{
+      date?: string | Date;
+      open?: number;
+      high?: number;
+      low?: number;
+      close?: number;
+      volume?: number;
+    }>;
+
+    return quotes
+      .map((candle) => {
+        const date = candle.date instanceof Date ? candle.date : candle.date ? new Date(candle.date) : undefined;
+        return {
+          date: date && !Number.isNaN(date.getTime()) ? date.toISOString() : new Date().toISOString(),
+          open: numberValue(candle.open) ?? 0,
+          high: numberValue(candle.high) ?? 0,
+          low: numberValue(candle.low) ?? 0,
+          close: numberValue(candle.close) ?? 0,
+          volume: numberValue(candle.volume)
+        };
+      })
       .filter((candle) => candle.open && candle.high && candle.low && candle.close);
   }
 
-  private async quoteSummary(symbol: string, modules: readonly string[]): Promise<Record<string, any>> {
-    const url = new URL(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}`);
-    url.searchParams.set("modules", modules.join(","));
-    url.searchParams.set("formatted", "false");
-    const result = await fetchJson<{ quoteSummary?: { result?: Record<string, any>[]; error?: unknown } }>(this.name, url);
-    return result.quoteSummary?.result?.[0] ?? {};
-  }
-
-  private async quoteBatch(symbols: string[]): Promise<YahooQuote[]> {
-    const url = new URL("https://query1.finance.yahoo.com/v7/finance/quote");
-    url.searchParams.set("symbols", symbols.join(","));
-    url.searchParams.set("formatted", "false");
-    const result = await fetchJson<{ quoteResponse?: { result?: YahooQuote[] } }>(this.name, url);
-    return result.quoteResponse?.result ?? [];
-  }
-
-  private async rawSearch(query: string, quotesCount: number, newsCount: number): Promise<Record<string, any>> {
-    const url = new URL("https://query2.finance.yahoo.com/v1/finance/search");
-    url.searchParams.set("q", query);
-    url.searchParams.set("quotesCount", String(quotesCount));
-    url.searchParams.set("newsCount", String(newsCount));
-    return fetchJson<Record<string, any>>(this.name, url);
-  }
-
   async search(query: string): Promise<SearchResult[]> {
-    const result = await this.rawSearch(query, 10, 0);
-
+    const result = (await retry(this.name, () =>
+      withTimeout(() => yahooFinance.search(query, { quotesCount: 10, newsCount: 0 }) as Promise<Record<string, any>>)
+    )) ?? {};
     return (result.quotes ?? []).map((quote: YahooQuote) => ({
       symbol: stringValue(quote.symbol) ?? "",
       name: stringValue(quote.shortname) ?? stringValue(quote.longname),
@@ -253,29 +320,75 @@ export class YahooAdapter implements ProviderAdapter {
   }
 
   async screener(scrId: "day_gainers" | "day_losers" | "most_actives" | "trending_tickers", count = 25): Promise<MarketAsset[]> {
-    const url = new URL("https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved");
-    url.searchParams.set("scrIds", scrId);
-    url.searchParams.set("count", String(count));
-    url.searchParams.set("formatted", "false");
-    const result = await fetchJson<Record<string, any>>(this.name, url);
-    const quotes = result.finance?.result?.[0]?.quotes ?? [];
-    return quotes.map(assetFromQuote);
+    if (scrId === "trending_tickers") {
+      try {
+        const trending = (await retry(this.name, () =>
+          withTimeout(() => yahooFinance.trendingSymbols("US", { count }) as Promise<Record<string, any>>)
+        )) ?? {};
+        const symbols = (trending.quotes ?? []).map((quote: YahooQuote) => stringValue(quote.symbol)).filter(Boolean) as string[];
+        if (symbols.length === 0) return [];
+        const quotes = (await retry(this.name, () => withTimeout(() => yahooFinance.quote(symbols) as unknown as Promise<YahooQuote[]>))) ?? [];
+        return quotes.map(assetFromQuote);
+      } catch {
+        return [];
+      }
+    }
+
+    try {
+      const result = (await retry(this.name, () =>
+        withTimeout(() =>
+          yahooFinance.screener(
+            { scrIds: scrId as any, count },
+            { validateResult: false }
+          ) as Promise<Record<string, any>>
+        )
+      )) ?? {};
+      const quotes = result.quotes ?? result.finance?.result?.[0]?.quotes ?? [];
+      return quotes.map(assetFromQuote);
+    } catch (error) {
+      throw error;
+    }
   }
 
   async indices(): Promise<MarketAsset[]> {
     const symbols = ["^GSPC", "^DJI", "^IXIC", "^RUT", "^FTSE", "^N225", "^HSI"];
-    const quotes = await this.quoteBatch(symbols);
+    const quotes = (await retry(this.name, () => withTimeout(() => yahooFinance.quote(symbols) as unknown as Promise<YahooQuote[]>))) ?? [];
     return quotes.map(assetFromQuote);
   }
 
   async compare(symbols: string[]): Promise<MarketAsset[]> {
-    const quotes = await this.quoteBatch(symbols);
+    if (symbols.length === 0) return [];
+    const quotes = (await retry(this.name, () => withTimeout(() => yahooFinance.quote(symbols) as unknown as Promise<YahooQuote[]>))) ?? [];
     return quotes.map(assetFromQuote);
   }
 
   async news(symbol: string): Promise<NewsItem[]> {
-    const result = await this.rawSearch(symbol, 0, 10);
+    const result = (await retry(this.name, () =>
+      withTimeout(() => yahooFinance.search(symbol, { quotesCount: 0, newsCount: 10 }) as Promise<Record<string, any>>)
+    )) ?? {};
     return newsFromItems(result.news);
+  }
+
+  async holders(symbol: string, exchange?: string): Promise<{
+    majorHolders: Record<string, unknown>;
+    institutionalOwnership: Array<Record<string, unknown>>;
+    fundOwnership: Array<Record<string, unknown>>;
+  }> {
+    const normalized = normalizeInstrument(exchange ?? "NASDAQ", symbol).providerSymbols.yahoo ?? normalizeSymbol(symbol, exchange);
+    try {
+      const summary = (await retry(this.name, () =>
+        withTimeout(() =>
+          yahooFinance.quoteSummary(normalized, { modules: [...HOLDER_MODULES] }) as Promise<Record<string, any>>
+        )
+      )) ?? {};
+      return {
+        majorHolders: summary.majorHoldersBreakdown ?? {},
+        institutionalOwnership: summary.institutionOwnership?.ownershipList ?? [],
+        fundOwnership: summary.fundOwnership?.ownershipList ?? []
+      };
+    } catch (error) {
+      throw new ProviderError(`Yahoo holders unavailable for ${normalized}`, this.name, error);
+    }
   }
 
   private statementRows(rows: Array<Record<string, any>> = []) {
@@ -297,12 +410,7 @@ export class YahooAdapter implements ProviderAdapter {
     const events: MarketEvent[] = [];
     const earningsDate = dateValue(summary.calendarEvents?.earnings?.earningsDate?.[0]);
     if (earningsDate) {
-      events.push({
-        type: "earnings",
-        date: earningsDate,
-        title: "Earnings date",
-        provider: this.name
-      });
+      events.push({ type: "earnings", date: earningsDate, title: "Earnings date", provider: this.name });
     }
 
     for (const filing of summary.secFilings?.filings ?? []) {
