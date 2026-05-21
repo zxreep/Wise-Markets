@@ -1,5 +1,21 @@
 import { z } from "zod";
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  if (["true", "1", "yes", "on"].includes(value.toLowerCase())) {
+    return true;
+  }
+
+  if (["false", "0", "no", "off"].includes(value.toLowerCase())) {
+    return false;
+  }
+
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.string().default("development"),
   HOST: z.string().default("0.0.0.0"),
@@ -11,7 +27,7 @@ const envSchema = z.object({
   FINANCEAPI_KEY: z.string().optional(),
   FRED_API_KEY: z.string().optional(),
   NEWSAPI_KEY: z.string().optional(),
-  ENABLE_WEBSOCKET: z.coerce.boolean().default(true)
+  ENABLE_WEBSOCKET: booleanFromEnv.default(true)
 });
 
 export const config = envSchema.parse(process.env);

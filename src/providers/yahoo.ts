@@ -14,12 +14,46 @@ import { normalizeSymbol } from "../utils/symbols.js";
 type YahooQuote = Record<string, unknown>;
 const yahoo = new yahooFinance();
 
+function unwrapValue(value: unknown): unknown {
+  if (value && typeof value === "object") {
+    const wrapped = value as { raw?: unknown; fmt?: unknown; longFmt?: unknown };
+    return wrapped.raw ?? wrapped.fmt ?? wrapped.longFmt ?? value;
+  }
+
+  return value;
+}
+
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const unwrapped = unwrapValue(value);
+  if (typeof unwrapped === "number" && Number.isFinite(unwrapped)) {
+    return unwrapped;
+  }
+
+  if (typeof unwrapped === "string" && unwrapped.trim() !== "") {
+    const parsed = Number(unwrapped.replace(/,/g, ""));
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const unwrapped = unwrapValue(value);
+  return typeof unwrapped === "string" && unwrapped.length > 0 ? unwrapped : undefined;
+}
+
+function dateValue(value: unknown): string | undefined {
+  const unwrapped = unwrapValue(value);
+  const date =
+    typeof unwrapped === "number"
+      ? new Date(unwrapped * 1000)
+      : typeof unwrapped === "string"
+        ? new Date(unwrapped)
+        : unwrapped instanceof Date
+          ? unwrapped
+          : undefined;
+
+  return date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined;
 }
 
 function assetFromQuote(quote: YahooQuote): MarketAsset {
@@ -234,7 +268,7 @@ export class YahooAdapter implements ProviderAdapter {
 
   private statementRows(rows: Array<Record<string, any>> = []) {
     return rows.map((row) => ({
-      period: row.endDate ? new Date(row.endDate).toISOString() : undefined,
+      period: dateValue(row.endDate),
       revenue: numberValue(row.totalRevenue),
       grossProfit: numberValue(row.grossProfit),
       operatingIncome: numberValue(row.operatingIncome),
@@ -249,11 +283,11 @@ export class YahooAdapter implements ProviderAdapter {
 
   private eventsFromSummary(summary: Record<string, any>): MarketEvent[] {
     const events: MarketEvent[] = [];
-    const earningsDate = summary.calendarEvents?.earnings?.earningsDate?.[0];
+    const earningsDate = dateValue(summary.calendarEvents?.earnings?.earningsDate?.[0]);
     if (earningsDate) {
       events.push({
         type: "earnings",
-        date: new Date(earningsDate).toISOString(),
+        date: earningsDate,
         title: "Earnings date",
         provider: this.name
       });
@@ -262,7 +296,7 @@ export class YahooAdapter implements ProviderAdapter {
     for (const filing of summary.secFilings?.filings ?? []) {
       events.push({
         type: "filing",
-        date: filing.date,
+        date: dateValue(filing.date),
         title: filing.type ?? "SEC filing",
         url: filing.edgarUrl,
         provider: this.name

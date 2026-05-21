@@ -20,22 +20,22 @@ export class ProviderRegistry {
       return await this.yahoo.securityOverview(symbol, exchange);
     } catch (error) {
       const [quote, chart, news] = await Promise.all([
-        this.stooq.quote(symbol),
+        this.stooq.quote(symbol).catch(() => undefined),
         this.stooq.chart(symbol).catch(() => []),
         this.news.financeNews(symbol).catch(() => [])
       ]);
       const latest = chart.at(-1);
       return {
-        symbol: quote.symbol,
-        exchange: quote.exchange ?? exchange,
+        symbol: quote?.symbol ?? symbol.toUpperCase(),
+        exchange: quote?.exchange ?? exchange,
         price: {
-          regularMarketPrice: quote.price ?? latest?.close,
-          exchange: quote.exchange,
+          regularMarketPrice: quote?.price ?? latest?.close,
+          exchange: quote?.exchange,
           sourceTime: new Date().toISOString()
         },
         fundamentals: {},
         financials: { annual: [], quarterly: [], cashflow: [] },
-        profile: { name: quote.name },
+        profile: { name: quote?.name },
         historicalPerformance: {},
         events: [],
         news

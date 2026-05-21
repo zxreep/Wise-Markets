@@ -41,5 +41,10 @@ export function splitSymbols(symbols: string): string[] {
 }
 
 export function toStooqSymbol(symbol: string): string {
-  return symbol.replace(".NS", ".IN").replace(".BO", ".IN").toLowerCase();
+  const normalized = symbol.replace(".NS", ".IN").replace(".BO", ".IN");
+  if (normalized.includes(".") || normalized.startsWith("^")) {
+    return normalized.toLowerCase();
+  }
+
+  return `${normalized}.US`.toLowerCase();
 }
