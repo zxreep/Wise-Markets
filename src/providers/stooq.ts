@@ -4,10 +4,11 @@ import { toStooqSymbol } from "../utils/symbols.js";
 
 export class StooqAdapter implements ProviderAdapter {
   readonly name = "stooq" as const;
+  readonly capabilities = { provider: this.name, supports: { markets: ["NYSE", "NASDAQ", "AMEX", "NSE", "BSE", "LSE", "XETRA", "TSE", "HKEX", "SSE", "FOREX", "COMMODITIES"], assetTypes: ["equity", "etf", "index", "forex", "commodity"] }, symbolRules: { input: "EXCHANGE:SYMBOL", providerFormat: "Stooq suffix format", examples: ["NASDAQ:AAPL", "NSE:RELIANCE"] }, fallbackMappings: { yahoo: "Yahoo suffix format" } } as const;
 
-  async quote(symbol: string): Promise<MarketAsset> {
+  async quote(symbol: string, exchange = "NASDAQ"): Promise<MarketAsset> {
     const url = new URL("https://stooq.com/q/l/");
-    url.searchParams.set("s", toStooqSymbol(symbol));
+    url.searchParams.set("s", toStooqSymbol(symbol, exchange));
     url.searchParams.set("f", "sd2t2ohlcvn");
     url.searchParams.set("h", "");
     url.searchParams.set("e", "csv");
@@ -29,16 +30,17 @@ export class StooqAdapter implements ProviderAdapter {
       price: Number(close),
       volume: Number(volume),
       type: "equity",
-      exchange: undefined,
+      assetType: "equity",
+      exchange,
       change: undefined,
       changePercent: undefined,
       marketCap: undefined
     };
   }
 
-  async chart(symbol: string, interval = "d"): Promise<Candle[]> {
+  async chart(symbol: string, interval = "d", exchange = "NASDAQ"): Promise<Candle[]> {
     const url = new URL("https://stooq.com/q/d/l/");
-    url.searchParams.set("s", toStooqSymbol(symbol));
+    url.searchParams.set("s", toStooqSymbol(symbol, exchange));
     url.searchParams.set("i", interval);
 
     const csv = await fetchText(this.name, url);

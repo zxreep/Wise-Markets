@@ -18,6 +18,7 @@ interface TrendingCoin {
 
 export class CoingeckoAdapter implements ProviderAdapter {
   readonly name = "coingecko" as const;
+  readonly capabilities = { provider: this.name, supports: { markets: ["CRYPTO", "BINANCE", "COINBASE", "KRAKEN"], assetTypes: ["crypto"] }, symbolRules: { input: "BASEQUOTE or coin id", providerFormat: "CoinGecko id/symbol", examples: ["BTCUSDT", "bitcoin"] }, fallbackMappings: { news: "finance news" } } as const;
   private readonly baseUrl = "https://api.coingecko.com/api/v3";
 
   async trending(): Promise<MarketAsset[]> {

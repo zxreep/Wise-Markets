@@ -9,7 +9,7 @@ import type {
   SecurityOverview
 } from "../types.js";
 import { fetchJson, retry, withTimeout } from "../utils/http.js";
-import { normalizeSymbol } from "../utils/symbols.js";
+import { assetTypeFromYahoo, exchangeFromYahoo, normalizeExchange, normalizeInstrument, normalizeSymbol } from "../utils/symbols.js";
 
 type YahooQuote = Record<string, unknown>;
 const yahoo = new yahooFinance();
@@ -85,6 +85,15 @@ function newsFromItems(items: Array<Record<string, unknown>> = []): NewsItem[] {
 
 export class YahooAdapter implements ProviderAdapter {
   readonly name = "yahoo" as const;
+  readonly capabilities = {
+    provider: this.name,
+    supports: {
+      markets: ["NYSE", "NASDAQ", "AMEX", "NSE", "BSE", "LSE", "EURONEXT", "XETRA", "TSE", "HKEX", "SSE", "FOREX", "COMMODITIES"],
+      assetTypes: ["equity", "etf", "index", "forex", "commodity", "mutual_fund"]
+    },
+    symbolRules: { input: "EXCHANGE:SYMBOL", providerFormat: "Yahoo suffix format", examples: ["NASDAQ:AAPL", "NSE:RELIANCE", "FOREX:EURUSD"] },
+    fallbackMappings: { stooq: "Stooq exchange suffix format", news: "related finance news" }
+  } as const;
 
   async quote(symbol: string, exchange?: string): Promise<YahooQuote> {
     const normalized = normalizeSymbol(symbol, exchange);
@@ -92,7 +101,8 @@ export class YahooAdapter implements ProviderAdapter {
   }
 
   async securityOverview(symbol: string, exchange?: string): Promise<SecurityOverview> {
-    const normalized = normalizeSymbol(symbol, exchange);
+    const instrument = normalizeInstrument(exchange ?? "NASDAQ", symbol);
+    const normalized = instrument.providerSymbols.yahoo ?? normalizeSymbol(symbol, exchange);
     const modules = [
       "price",
       "summaryProfile",
@@ -124,8 +134,9 @@ export class YahooAdapter implements ProviderAdapter {
     const first = chart[0];
 
     return {
-      symbol: normalized,
-      exchange: stringValue(price.exchangeName) ?? exchange,
+      symbol: instrument.symbol,
+      exchange: instrument.exchange,
+      assetType: instrument.assetType,
       price: {
         regularMarketPrice: numberValue(price.regularMarketPrice) ?? latest?.close,
         previousClose: numberValue(summaryDetail.previousClose),
@@ -166,8 +177,8 @@ export class YahooAdapter implements ProviderAdapter {
     };
   }
 
-  async chart(symbol: string, range = "1y", interval = "1d"): Promise<Candle[]> {
-    const normalized = normalizeSymbol(symbol);
+  async chart(symbol: string, range = "1y", interval = "1d", exchange = "NASDAQ"): Promise<Candle[]> {
+    const normalized = normalizeInstrument(exchange, symbol).providerSymbols.yahoo ?? normalizeSymbol(symbol, exchange);
     const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalized)}`);
     url.searchParams.set("range", range);
     url.searchParams.set("interval", interval);
@@ -234,7 +245,8 @@ export class YahooAdapter implements ProviderAdapter {
     return (result.quotes ?? []).map((quote: YahooQuote) => ({
       symbol: stringValue(quote.symbol) ?? "",
       name: stringValue(quote.shortname) ?? stringValue(quote.longname),
-      exchange: stringValue(quote.exchDisp) ?? stringValue(quote.exchange),
+      exchange: exchangeFromYahoo(stringValue(quote.exchange)) ?? normalizeExchange(stringValue(quote.exchDisp)),
+      assetType: assetTypeFromYahoo(stringValue(quote.quoteType)),
       type: stringValue(quote.quoteType),
       provider: this.name
     }));

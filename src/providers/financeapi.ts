@@ -4,6 +4,7 @@ import { fetchJson } from "../utils/http.js";
 
 export class FinanceApiAdapter implements ProviderAdapter {
   readonly name = "financeapi" as const;
+  readonly capabilities = { provider: this.name, supports: { markets: ["NYSE", "NASDAQ", "AMEX", "NSE", "BSE", "LSE", "XETRA", "TSE", "HKEX", "SSE"], assetTypes: ["equity", "etf", "index"] }, symbolRules: { input: "EXCHANGE:SYMBOL", providerFormat: "FinanceAPI market symbol", examples: ["NASDAQ:AAPL"] }, fallbackMappings: { yahoo: "Yahoo suffix format" } } as const;
   private readonly baseUrl = "https://api.financeapi.net";
 
   async search(query: string): Promise<SearchResult[]> {

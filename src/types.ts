@@ -1,4 +1,40 @@
-export type ProviderName = "yahoo" | "financeapi" | "coingecko" | "fred" | "stooq" | "news";
+export type ProviderName = "yahoo" | "financeapi" | "coingecko" | "fred" | "stooq" | "news" | "ccxt";
+export type AssetType = "equity" | "etf" | "index" | "crypto" | "forex" | "commodity" | "mutual_fund" | "macro";
+export type ExchangeCode = string;
+
+export interface ProviderCapability {
+  provider: ProviderName;
+  supports: {
+    markets: readonly ExchangeCode[];
+    assetTypes: readonly AssetType[];
+  };
+  symbolRules: {
+    input: string;
+    providerFormat: string;
+    examples: readonly string[];
+  };
+  fallbackMappings: Partial<Record<ProviderName, string>>;
+}
+
+export interface ExchangeDefinition {
+  code: ExchangeCode;
+  name: string;
+  country?: string;
+  region: "americas" | "europe" | "asia" | "global";
+  market: "securities" | "crypto" | "forex" | "macro";
+  assetTypes: AssetType[];
+  aliases: string[];
+  providerSymbols: Partial<Record<ProviderName, { suffix?: string; prefix?: string; exchange?: string }>>;
+  defaultProviders: ProviderName[];
+}
+
+export interface NormalizedSymbol {
+  exchange: ExchangeCode;
+  symbol: string;
+  assetType: AssetType;
+  providerSymbols: Partial<Record<ProviderName, string>>;
+  canonical: string;
+}
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -7,6 +43,7 @@ export interface ApiEnvelope<T> {
     fallbackProviders?: ProviderName[];
     symbol?: string;
     exchange?: string;
+    assetType?: AssetType;
     asOf: string;
     cached?: boolean;
   };
@@ -58,6 +95,7 @@ export interface FinancialStatementRow {
 export interface SecurityOverview {
   symbol: string;
   exchange?: string;
+  assetType?: AssetType;
   price: PriceSnapshot;
   fundamentals: Fundamentals;
   financials: {
@@ -75,6 +113,7 @@ export interface MarketAsset {
   symbol: string;
   name?: string;
   exchange?: string;
+  assetType?: AssetType;
   price?: number;
   change?: number;
   changePercent?: number;
@@ -105,6 +144,7 @@ export interface SearchResult {
   symbol: string;
   name?: string;
   exchange?: string;
+  assetType?: AssetType;
   type?: string;
   provider: ProviderName;
 }
@@ -127,4 +167,5 @@ export interface ForexRate {
 
 export interface ProviderAdapter {
   name: ProviderName;
+  capabilities: ProviderCapability;
 }
